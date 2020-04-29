@@ -95,11 +95,48 @@ func runMapper(mapf func(string, string) []KeyValue, task *TaskAssignment) {
 func runReducer(reducef func(string, []string) string, task *TaskAssignment) {
 	log.Println("going to run reducer")
 
-	taskID := task.TaskID
 	filename := task.Filename
-	//read file and run reduction
-	log.Printf("now running reduce for taskId: %d and filename %s\n", taskID, filename)
+	fileToReduce, err := os.Open(filename)
+	if err != nil {
+		log.Printf("Couldn't open file %s to reduce\n", filename)
+	}
 
+	intermediate := []KeyValue{}
+	dec := json.NewDecoder(fileToReduce)
+	for {
+		var kv KeyValue
+		if err := dec.Decode(&kv); err != nil {
+			break
+		}
+		intermediate = append(intermediate, kv)
+	}
+
+	oname := fmt.Sprintf("mr-out-%d", task.TaskID)
+	ofile, _ := os.Create(oname)
+
+	//
+	// call Reduce on each distinct key in intermediate[],
+	// and print the result to mr-out-0.
+	//
+	i := 0
+	for i < len(intermediate) {
+		j := i + 1
+		for j < len(intermediate) && intermediate[j].Key == intermediate[i].Key {
+			j++
+		}
+		values := []string{}
+		for k := i; k < j; k++ {
+			values = append(values, intermediate[k].Value)
+		}
+		output := reducef(intermediate[i].Key, values)
+
+		// this is the correct format for each line of Reduce output.
+		fmt.Fprintf(ofile, "%v %v\n", intermediate[i].Key, output)
+
+		i = j
+	}
+
+	ofile.Close()
 }
 
 // GetTask connects to master and gets task assignment */
