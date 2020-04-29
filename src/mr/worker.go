@@ -1,11 +1,14 @@
 package mr
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"hash/fnv"
 	"log"
 	"net/rpc"
+	"os"
+	"sort"
 	"time"
 
 	"github.com/google/uuid"
@@ -54,8 +57,39 @@ func runMapper(mapf func(string, string) []KeyValue, task *TaskAssignment) {
 	taskID := task.TaskID
 	filename := task.Filename
 	log.Printf("Handling mapping task %d filename: %s\n", taskID, filename)
+	content, err := readFile(filename)
 
-	//TODO Implement mapper
+	if err != nil {
+		log.Printf("Couldn't read from %s\n", filename)
+	}
+
+	//call map function
+	intermediatekeyValues := mapf(filename, content)
+
+	log.Printf("Got intermediate values")
+
+	sort.Sort(ByKey(intermediatekeyValues))
+
+	encoders := make(map[int]*json.Encoder)
+
+	//create intermediate files
+	for i := 0; i < task.NReduce; i++ {
+		intermediateFileName := fmt.Sprintf("mr-%d-%d.txt", taskID, i)
+		emptyFile, err := os.Create(intermediateFileName)
+		if err != nil {
+			log.Printf("Couldn't create empty file %s\n", intermediateFileName)
+		}
+		enc := json.NewEncoder(emptyFile)
+		encoders[i] = enc
+	}
+
+	//create numReduce files
+	for _, kv := range intermediatekeyValues {
+		err := encoders[ihash(kv.Key)%task.NReduce].Encode(&kv)
+		if err != nil {
+			log.Printf("Couldn't encode %v\n", &kv)
+		}
+	}
 }
 
 func runReducer(reducef func(string, []string) string, task *TaskAssignment) {
