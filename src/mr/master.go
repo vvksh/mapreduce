@@ -1,29 +1,55 @@
 package mr
 
-import "log"
-import "net"
-import "os"
-import "net/rpc"
-import "net/http"
+import (
+	"errors"
+	"log"
+	"net"
+	"net/http"
+	"net/rpc"
+	"os"
+)
 
-
+// Master struct
 type Master struct {
-	// Your definitions here.
-
+	files             []string
+	nReduce           int
+	mapAssignments    map[int]*TaskInfo
+	reduceAssignments map[int]*TaskInfo
 }
 
-// Your code here -- RPC handlers for the worker to call.
+// TaskStatus : stages of tasks
+type TaskStatus string
 
-//
-// an example RPC handler.
-//
-// the RPC argument and reply types are defined in rpc.go.
-//
-func (m *Master) Example(args *ExampleArgs, reply *ExampleReply) error {
-	reply.Y = args.X + 1
-	return nil
+const (
+	IDLE        TaskStatus = "IDLE"
+	IN_PROGRESS            = "IN_PROGRESS"
+	FAILED                 = "FAILED"
+)
+
+type TaskInfo struct {
+	filename string
+	workerID string
+	status   TaskStatus
 }
 
+// AssignTask assigns task to worker
+func (m *Master) AssignTask(taskRequest *TaskRequest, taskAssignment *TaskAssignment) error {
+	//see if there are any idle map tasks available
+	for taskID, taskInfo := range m.mapAssignments {
+		log.Printf("looking for idle task %v\n", taskInfo)
+		if taskInfo.status == IDLE {
+			taskInfo.workerID = taskRequest.WorkerID
+			taskInfo.status = IN_PROGRESS
+			taskAssignment.TaskID = taskID
+			taskAssignment.Filename = taskInfo.filename
+			taskAssignment.Type = MAP
+			taskAssignment.NReduce = 1
+			log.Printf("task assignment: %v", taskAssignment)
+			return nil
+		}
+	}
+	return errors.New("No idle tasks to assign")
+}
 
 //
 // start a thread that listens for RPCs from worker.go
@@ -50,21 +76,27 @@ func (m *Master) Done() bool {
 
 	// Your code here.
 
-
 	return ret
 }
 
 //
-// create a Master.
+// MakeMaster create a Master.
 // main/mrmaster.go calls this function.
 // nReduce is the number of reduce tasks to use.
 //
 func MakeMaster(files []string, nReduce int) *Master {
 	m := Master{}
+	m.files = files
+	m.nReduce = nReduce
+	m.mapAssignments = make(map[int]*TaskInfo)
+	for i, filename := range files {
+		mapTaskInfo := TaskInfo{}
+		mapTaskInfo.filename = filename
+		mapTaskInfo.status = IDLE
+		m.mapAssignments[i+1] = &mapTaskInfo
+	}
 
-	// Your code here.
-
-
+	m.reduceAssignments = make(map[int]*TaskInfo)
 	m.server()
 	return &m
 }

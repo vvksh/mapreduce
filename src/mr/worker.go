@@ -1,18 +1,15 @@
 package mr
 
-import "fmt"
-import "log"
-import "net/rpc"
-import "hash/fnv"
+import (
+	"errors"
+	"fmt"
+	"hash/fnv"
+	"log"
+	"net/rpc"
+	"time"
 
-
-//
-// Map functions return a slice of KeyValue.
-//
-type KeyValue struct {
-	Key   string
-	Value string
-}
+	"github.com/google/uuid"
+)
 
 //
 // use ihash(key) % NReduce to choose the reduce
@@ -24,6 +21,7 @@ func ihash(key string) int {
 	return int(h.Sum32() & 0x7fffffff)
 }
 
+var workerID string
 
 //
 // main/mrworker.go calls this function.
@@ -31,34 +29,56 @@ func ihash(key string) int {
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
 
-	// Your worker implementation here.
+	workerID = uuid.New().String()
 
-	// uncomment to send the Example RPC to the master.
-	// CallExample()
+	for {
+		task, err := GetTask()
+		if err != nil {
+			log.Println("Got error response from master, quitting")
+			break
+		}
+		log.Printf("Got task %v\n", task)
+		if task.Type == MAP {
+			runMapper(mapf, task)
+		} else {
+			runReducer(reducef, task)
+		}
+		time.Sleep(5 * time.Second)
+	}
 
 }
 
-//
-// example function to show how to make an RPC call to the master.
-//
-// the RPC argument and reply types are defined in rpc.go.
-//
-func CallExample() {
+func runMapper(mapf func(string, string) []KeyValue, task *TaskAssignment) {
+	log.Println("going to run mapper")
 
-	// declare an argument structure.
-	args := ExampleArgs{}
+	taskID := task.TaskID
+	filename := task.Filename
+	log.Printf("Handling mapping task %d filename: %s\n", taskID, filename)
 
-	// fill in the argument(s).
-	args.X = 99
+	//TODO Implement mapper
+}
 
-	// declare a reply structure.
-	reply := ExampleReply{}
+func runReducer(reducef func(string, []string) string, task *TaskAssignment) {
+	log.Println("going to run reducer")
 
-	// send the RPC request, wait for the reply.
-	call("Master.Example", &args, &reply)
+	taskID := task.TaskID
+	filename := task.Filename
+	//read file and run reduction
+	log.Printf("now running reduce for taskId: %d and filename %s\n", taskID, filename)
 
-	// reply.Y should be 100.
-	fmt.Printf("reply.Y %v\n", reply.Y)
+}
+
+// GetTask connects to master and gets task assignment */
+func GetTask() (*TaskAssignment, error) {
+	taskRequest := TaskRequest{}
+	taskRequest.WorkerID = workerID
+	taskAssignment := TaskAssignment{}
+	if call("Master.AssignTask", &taskRequest, &taskAssignment) {
+		log.Printf("got assignment file %v\n", taskAssignment.Filename)
+		return &taskAssignment, nil
+	}
+	return nil, errors.New("Couldn't connect to master")
+
 }
 
 //
