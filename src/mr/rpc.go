@@ -22,6 +22,17 @@ type TaskRequest struct {
 	WorkerID string
 }
 
+type TaskDoneNotification struct {
+	WorkerID  string
+	Filenames []string
+	TaskID    int
+	Type      TaskType
+}
+
+type TaskDoneAck struct {
+	Ack bool
+}
+
 type TaskAssignment struct {
 	TaskID   int
 	Type     TaskType

@@ -24,12 +24,13 @@ const (
 	IDLE        TaskStatus = "IDLE"
 	IN_PROGRESS            = "IN_PROGRESS"
 	FAILED                 = "FAILED"
+	DONE                   = "DONE"
 )
 
 type TaskInfo struct {
-	filename string
-	workerID string
-	status   TaskStatus
+	filenames []string
+	workerID  string
+	status    TaskStatus
 }
 
 // AssignTask assigns task to worker
@@ -41,14 +42,33 @@ func (m *Master) AssignTask(taskRequest *TaskRequest, taskAssignment *TaskAssign
 			taskInfo.workerID = taskRequest.WorkerID
 			taskInfo.status = IN_PROGRESS
 			taskAssignment.TaskID = taskID
-			taskAssignment.Filename = taskInfo.filename
+			taskAssignment.Filename = taskInfo.filenames[0]
 			taskAssignment.Type = MAP
 			taskAssignment.NReduce = 1
 			log.Printf("task assignment: %v", taskAssignment)
 			return nil
 		}
 	}
+
 	return errors.New("No idle tasks to assign")
+}
+
+// TaskDone handles call from worker when worker is done with task
+func (m *Master) TaskDone(taskDoneNotification *TaskDoneNotification, taskDoneAck *TaskDoneAck) error {
+	// if map tasks, mark it done and create a reduce task
+	if taskDoneNotification.Type == MAP {
+		log.Printf("Received MAP DONE notification from worker")
+		taskInfo := m.mapAssignments[taskDoneNotification.TaskID]
+		taskInfo.status = DONE
+		m.reduceAssignments[taskDoneNotification.TaskID] = createReduceTask(taskDoneNotification.Filenames)
+		log.Printf("Created a REDUCE task %v\n", m.reduceAssignments[taskDoneNotification.TaskID])
+		taskDoneAck.Ack = true
+	} else {
+		// for reduce tasks
+		log.Printf("Not handling reduce task yet")
+
+	}
+	return nil
 }
 
 //
@@ -91,7 +111,7 @@ func MakeMaster(files []string, nReduce int) *Master {
 	m.mapAssignments = make(map[int]*TaskInfo)
 	for i, filename := range files {
 		mapTaskInfo := TaskInfo{}
-		mapTaskInfo.filename = filename
+		mapTaskInfo.filenames = []string{filename}
 		mapTaskInfo.status = IDLE
 		m.mapAssignments[i+1] = &mapTaskInfo
 	}
@@ -99,4 +119,12 @@ func MakeMaster(files []string, nReduce int) *Master {
 	m.reduceAssignments = make(map[int]*TaskInfo)
 	m.server()
 	return &m
+}
+
+func createReduceTask(filenames []string) *TaskInfo {
+	taskInfo := TaskInfo{}
+	taskInfo.status = IDLE
+	taskInfo.filenames = filenames
+	return &taskInfo
+	// m.reduceAssignments[taskID] = &taskInfo
 }

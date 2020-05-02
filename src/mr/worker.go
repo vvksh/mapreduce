@@ -70,11 +70,14 @@ func runMapper(mapf func(string, string) []KeyValue, task *TaskAssignment) {
 
 	sort.Sort(ByKey(intermediatekeyValues))
 
+	intermediateFileNames := []string{}
+
 	encoders := make(map[int]*json.Encoder)
 
 	//create intermediate files
 	for i := 0; i < task.NReduce; i++ {
 		intermediateFileName := fmt.Sprintf("mr-%d-%d.txt", taskID, i)
+		intermediateFileNames = append(intermediateFileNames, intermediateFileName)
 		emptyFile, err := os.Create(intermediateFileName)
 		if err != nil {
 			log.Printf("Couldn't create empty file %s\n", intermediateFileName)
@@ -90,6 +93,9 @@ func runMapper(mapf func(string, string) []KeyValue, task *TaskAssignment) {
 			log.Printf("Couldn't encode %v\n", &kv)
 		}
 	}
+
+	//notify master
+	TaskDone(intermediateFileNames, taskID, MAP)
 }
 
 func runReducer(reducef func(string, []string) string, task *TaskAssignment) {
@@ -149,6 +155,26 @@ func GetTask() (*TaskAssignment, error) {
 		return &taskAssignment, nil
 	}
 	return nil, errors.New("Couldn't connect to master")
+
+}
+
+// TaskDone notify masterthat task is complete */
+func TaskDone(filenames []string, taskID int, taskType TaskType) {
+	taskDoneNotification := TaskDoneNotification{}
+	taskDoneNotification.WorkerID = workerID
+	taskDoneNotification.Filenames = filenames
+	taskDoneNotification.TaskID = taskID
+	taskDoneNotification.Type = taskType
+
+	taskDoneAck := TaskDoneAck{}
+
+	if call("Master.TaskDone", &taskDoneNotification, &taskDoneAck) {
+		if !taskDoneAck.Ack {
+			log.Panicf("Master didnt ack")
+		}
+	} else {
+		log.Panicf("Couldn't notify master")
+	}
 
 }
 
