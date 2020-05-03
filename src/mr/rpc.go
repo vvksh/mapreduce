@@ -34,10 +34,10 @@ type TaskDoneAck struct {
 }
 
 type TaskAssignment struct {
-	TaskID   int
-	Type     TaskType
-	Filename string
-	NReduce  int
+	TaskID    int
+	Type      TaskType
+	Filenames []string
+	NReduce   int
 }
 
 // Cook up a unique-ish UNIX-domain socket name
