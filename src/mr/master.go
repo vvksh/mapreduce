@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"net/rpc"
 	"os"
+	"regexp"
+	"strconv"
 )
 
 // Master struct
@@ -33,6 +35,8 @@ type TaskInfo struct {
 	status    TaskStatus
 }
 
+var intRegex = regexp.MustCompile("[0-9]+")
+
 // AssignTask assigns task to worker
 func (m *Master) AssignTask(taskRequest *TaskRequest, taskAssignment *TaskAssignment) error {
 	//see if there are any idle map tasks available
@@ -44,7 +48,7 @@ func (m *Master) AssignTask(taskRequest *TaskRequest, taskAssignment *TaskAssign
 			taskAssignment.TaskID = taskID
 			taskAssignment.Filenames = taskInfo.filenames
 			taskAssignment.Type = MAP
-			taskAssignment.NReduce = 1
+			taskAssignment.NReduce = m.nReduce
 			log.Printf("task assignment: %v", taskAssignment)
 			return nil
 		}
@@ -59,7 +63,7 @@ func (m *Master) AssignTask(taskRequest *TaskRequest, taskAssignment *TaskAssign
 			taskAssignment.TaskID = taskID
 			taskAssignment.Filenames = taskInfo.filenames
 			taskAssignment.Type = REDUCE
-			taskAssignment.NReduce = 1
+			taskAssignment.NReduce = m.nReduce
 			log.Printf("task assignment: %v", taskAssignment)
 			return nil
 		}
@@ -75,9 +79,12 @@ func (m *Master) TaskDone(taskDoneNotification *TaskDoneNotification, taskDoneAc
 		log.Printf("Received MAP DONE notification from worker")
 		taskInfo := m.mapAssignments[taskDoneNotification.TaskID]
 		taskInfo.status = DONE
-		m.reduceAssignments[taskDoneNotification.TaskID] = createReduceTask(taskDoneNotification.Filenames)
+		m.UpdateReduceTasks(taskDoneNotification.Filenames)
+
+		//remove map task
 		delete(m.mapAssignments, taskDoneNotification.TaskID)
-		log.Printf("Created a REDUCE task %v\n", m.reduceAssignments[taskDoneNotification.TaskID])
+
+		log.Printf("Updated a REDUCE task \n")
 		taskDoneAck.Ack = true
 	} else {
 		// for reduce tasks
@@ -91,6 +98,20 @@ func (m *Master) TaskDone(taskDoneNotification *TaskDoneNotification, taskDoneAc
 
 	}
 	return nil
+}
+
+// UpdateReduceTasks takes bunch of intermediate files and creates or updates reduce tasks
+func (m *Master) UpdateReduceTasks(mapIntermediateFiles []string) {
+	for _, mapIntermediateFile := range mapIntermediateFiles {
+		reduceTaskID := getReduceTaskID(mapIntermediateFile)
+		// if there is already a reduce task, append filename to that reduce task
+		if reduceTask, ok := m.reduceAssignments[reduceTaskID]; ok {
+			reduceTask.filenames = append(reduceTask.filenames, mapIntermediateFile)
+		} else {
+			m.reduceAssignments[reduceTaskID] = createReduceTask(mapIntermediateFile)
+		}
+	}
+
 }
 
 //
@@ -153,10 +174,22 @@ func MakeMaster(files []string, nReduce int) *Master {
 	return &m
 }
 
-func createReduceTask(filenames []string) *TaskInfo {
+func createReduceTask(filename string) *TaskInfo {
 	taskInfo := TaskInfo{}
 	taskInfo.status = IDLE
-	taskInfo.filenames = filenames
+	taskInfo.filenames = []string{filename}
 	return &taskInfo
 	// m.reduceAssignments[taskID] = &taskInfo
+}
+
+func getReduceTaskID(filename string) int {
+	//TODO find a better way
+	matches := intRegex.FindAllString(filename, -1)
+	if len(matches) == 2 {
+		reduceTaskID, _ := strconv.Atoi(matches[1])
+		return reduceTaskID
+
+	}
+	log.Panicf("couldn't parse reduce task id from filename %v\n", filename)
+	return -1
 }
