@@ -72,7 +72,7 @@ func runMapper(mapf func(string, string) []KeyValue, task *TaskAssignment) {
 
 	log.Printf("Got intermediate values")
 
-	sort.Sort(ByKey(intermediatekeyValues))
+	// sort.Sort(ByKey(intermediatekeyValues))
 
 	intermediateFileNames := []string{}
 
@@ -107,15 +107,17 @@ func runReducer(reducef func(string, []string) string, task *TaskAssignment) {
 
 	filenames := task.Filenames
 
-	outputFiles := []string{}
+	log.Printf("got these files for reduce %v\n", filenames)
 
+	//read intermediate keys,values from all intermediate files assigned to this reduce task
+	intermediate := []KeyValue{}
 	for _, filename := range filenames {
 		fileToReduce, err := os.Open(filename)
 		if err != nil {
 			log.Printf("Couldn't open file %s to reduce\n", filename)
 		}
 
-		intermediate := []KeyValue{}
+		
 		dec := json.NewDecoder(fileToReduce)
 		for {
 			var kv KeyValue
@@ -124,37 +126,41 @@ func runReducer(reducef func(string, []string) string, task *TaskAssignment) {
 			}
 			intermediate = append(intermediate, kv)
 		}
-
-		oname := fmt.Sprintf("mr-out-%d", task.TaskID)
-		outputFiles = append(outputFiles, oname)
-		ofile, _ := os.Create(oname)
-
-		//
-		// call Reduce on each distinct key in intermediate[],
-		// and print the result to mr-out-0.
-		//
-		i := 0
-		for i < len(intermediate) {
-			j := i + 1
-			for j < len(intermediate) && intermediate[j].Key == intermediate[i].Key {
-				j++
-			}
-			values := []string{}
-			for k := i; k < j; k++ {
-				values = append(values, intermediate[k].Value)
-			}
-			output := reducef(intermediate[i].Key, values)
-
-			// this is the correct format for each line of Reduce output.
-			fmt.Fprintf(ofile, "%v %v\n", intermediate[i].Key, output)
-
-			i = j
-		}
-		ofile.Close()
 	}
 
+	//sort all key values
+	sort.Sort(ByKey(intermediate))
+
+	//create output file to append each output of reduce function
+	oname := fmt.Sprintf("mr-out-%d", task.TaskID)
+	ofile, _ := os.Create(oname)
+
+	//
+	// call Reduce on each distinct key in intermediate[],
+	// since intermediate is sorted, pass key and all associated values at a time to reduce function
+	// and print the result to mr-out-0.
+	//
+	i := 0
+	for i < len(intermediate) {
+		j := i + 1
+		for j < len(intermediate) && intermediate[j].Key == intermediate[i].Key {
+			j++
+		}
+		values := []string{}
+		for k := i; k < j; k++ {
+			values = append(values, intermediate[k].Value)
+		}
+		output := reducef(intermediate[i].Key, values)
+
+		// this is the correct format for each line of Reduce output.
+		fmt.Fprintf(ofile, "%v %v\n", intermediate[i].Key, output)
+
+		i = j
+	}	
+	ofile.Close()
+
 	//notify master
-	TaskDone(outputFiles, task.TaskID, REDUCE)
+	TaskDone([]string{oname}, task.TaskID, REDUCE)
 }
 
 // GetTask connects to master and gets task assignment */
