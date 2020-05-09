@@ -1,7 +1,6 @@
 package mr
 
 import (
-	"errors"
 	"log"
 	"net"
 	"net/http"
@@ -54,22 +53,25 @@ func (m *Master) AssignTask(taskRequest *TaskRequest, taskAssignment *TaskAssign
 		}
 	}
 
-	// if no map assignements, look for any reduce tasks
-	for taskID, taskInfo := range m.reduceAssignments {
-		log.Printf("looking for idle REDUCE task %v\n", taskInfo)
-		if taskInfo.status == IDLE {
-			taskInfo.workerID = taskRequest.WorkerID
-			taskInfo.status = IN_PROGRESS
-			taskAssignment.TaskID = taskID
-			taskAssignment.Filenames = taskInfo.filenames
-			taskAssignment.Type = REDUCE
-			taskAssignment.NReduce = m.nReduce
-			log.Printf("task assignment: %v", taskAssignment)
-			return nil
+	// if all map tasks done, look for any reduce tasks
+	if m.MapDone() {
+		for taskID, taskInfo := range m.reduceAssignments {
+			log.Printf("looking for idle REDUCE task %v\n", taskInfo)
+			if taskInfo.status == IDLE {
+				taskInfo.workerID = taskRequest.WorkerID
+				taskInfo.status = IN_PROGRESS
+				taskAssignment.TaskID = taskID
+				taskAssignment.Filenames = taskInfo.filenames
+				taskAssignment.Type = REDUCE
+				taskAssignment.NReduce = m.nReduce
+				log.Printf("task assignment: %v", taskAssignment)
+				return nil
+			}
 		}
 	}
 
-	return errors.New("No idle tasks to assign")
+	//No tasks for now
+	return nil
 }
 
 // TaskDone handles call from worker when worker is done with task
@@ -80,19 +82,11 @@ func (m *Master) TaskDone(taskDoneNotification *TaskDoneNotification, taskDoneAc
 		taskInfo := m.mapAssignments[taskDoneNotification.TaskID]
 		taskInfo.status = DONE
 		m.UpdateReduceTasks(taskDoneNotification.Filenames)
-
-		//remove map task
-		delete(m.mapAssignments, taskDoneNotification.TaskID)
-
-		log.Printf("Updated a REDUCE task \n")
 		taskDoneAck.Ack = true
 	} else {
 		// for reduce tasks
-		log.Printf("Received REDUCE DONE notification from worker")
 		taskInfo := m.reduceAssignments[taskDoneNotification.TaskID]
 		taskInfo.status = DONE
-		log.Printf("Output reduce tasks: %v", taskDoneNotification.Filenames)
-		// m.reduceAssignments[taskDoneNotification.TaskID] = createReduceTask(taskDoneNotification.Filenames)
 		log.Printf("Marked REDUCE task %v done\n", m.reduceAssignments[taskDoneNotification.TaskID])
 		taskDoneAck.Ack = true
 
@@ -135,20 +129,26 @@ func (m *Master) server() {
 // if the entire job has finished.
 //
 func (m *Master) Done() bool {
+	return m.MapDone() && m.ReduceDone()
+}
 
-	//check if all map tasks marked done and removed
-	if len(m.mapAssignments) != 0 {
-		// log.Printf("Map tasks not done\n")
-		return false
+func (m *Master) MapDone() bool {
+	for _, mapAssignment := range m.mapAssignments {
+		if mapAssignment.status != DONE {
+			// log.Printf("REDUCE tasks not done \n %v\n", reduceAssignment)
+			return false
+		}
 	}
+	return true
+}
 
+func (m *Master) ReduceDone() bool {
 	for _, reduceAssignment := range m.reduceAssignments {
 		if reduceAssignment.status != DONE {
 			// log.Printf("REDUCE tasks not done \n %v\n", reduceAssignment)
 			return false
 		}
 	}
-
 	return true
 }
 

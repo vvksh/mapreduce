@@ -37,14 +37,16 @@ func Worker(mapf func(string, string) []KeyValue,
 	for {
 		task, err := GetTask()
 		if err != nil {
-			log.Println("No tasks received from master, quitting")
+			log.Println("Couldn't connect to master,quitting")
 			break
 		}
 		log.Printf("Got task %v\n", task)
-		if task.Type == MAP {
-			runMapper(mapf, task)
-		} else {
-			runReducer(reducef, task)
+		if tasksAssigned(task) {
+			if task.Type == MAP {
+				runMapper(mapf, task)
+			} else {
+				runReducer(reducef, task)
+			}
 		}
 		time.Sleep(5 * time.Second)
 	}
@@ -52,8 +54,6 @@ func Worker(mapf func(string, string) []KeyValue,
 }
 
 func runMapper(mapf func(string, string) []KeyValue, task *TaskAssignment) {
-	log.Println("going to run mapper")
-
 	taskID := task.TaskID
 	if len(task.Filenames) != 1 {
 		log.Printf("Mapper expects only one file, got wrong taskAssignment: %v\n", task)
@@ -69,10 +69,6 @@ func runMapper(mapf func(string, string) []KeyValue, task *TaskAssignment) {
 
 	//call map function
 	intermediatekeyValues := mapf(filename, content)
-
-	log.Printf("Got intermediate values")
-
-	// sort.Sort(ByKey(intermediatekeyValues))
 
 	intermediateFileNames := []string{}
 
@@ -103,11 +99,7 @@ func runMapper(mapf func(string, string) []KeyValue, task *TaskAssignment) {
 }
 
 func runReducer(reducef func(string, []string) string, task *TaskAssignment) {
-	log.Println("going to run reducer")
-
 	filenames := task.Filenames
-
-	log.Printf("got these files for reduce %v\n", filenames)
 
 	//read intermediate keys,values from all intermediate files assigned to this reduce task
 	intermediate := []KeyValue{}
@@ -117,7 +109,6 @@ func runReducer(reducef func(string, []string) string, task *TaskAssignment) {
 			log.Printf("Couldn't open file %s to reduce\n", filename)
 		}
 
-		
 		dec := json.NewDecoder(fileToReduce)
 		for {
 			var kv KeyValue
@@ -156,7 +147,7 @@ func runReducer(reducef func(string, []string) string, task *TaskAssignment) {
 		fmt.Fprintf(ofile, "%v %v\n", intermediate[i].Key, output)
 
 		i = j
-	}	
+	}
 	ofile.Close()
 
 	//notify master
@@ -169,10 +160,10 @@ func GetTask() (*TaskAssignment, error) {
 	taskRequest.WorkerID = workerID
 	taskAssignment := TaskAssignment{}
 	if call("Master.AssignTask", &taskRequest, &taskAssignment) {
-		log.Printf("got assignment files %v\n", taskAssignment.Filenames)
 		return &taskAssignment, nil
+	} else {
+		return nil, errors.New("Couldn't connect to master")
 	}
-	return nil, errors.New("Couldn't connect to master")
 
 }
 
@@ -217,4 +208,8 @@ func call(rpcname string, args interface{}, reply interface{}) bool {
 
 	fmt.Println(err)
 	return false
+}
+
+func tasksAssigned(task *TaskAssignment) bool {
+	return len(task.Filenames) > 0
 }
