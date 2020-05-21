@@ -8,6 +8,8 @@ import (
 	"os"
 	"regexp"
 	"strconv"
+	"sync"
+	"time"
 )
 
 // Master struct
@@ -16,6 +18,9 @@ type Master struct {
 	nReduce           int
 	mapAssignments    map[int]*TaskInfo
 	reduceAssignments map[int]*TaskInfo
+	mux               sync.Mutex
+	wg                sync.WaitGroup
+	done              bool
 }
 
 // TaskStatus : stages of tasks
@@ -29,21 +34,29 @@ const (
 )
 
 type TaskInfo struct {
-	filenames []string
-	workerID  string
-	status    TaskStatus
+	filenames  []string
+	workerID   string
+	status     TaskStatus
+	assignedAt time.Time
 }
 
 var intRegex = regexp.MustCompile("[0-9]+")
+var TIMEOUT = time.Second * 10
 
 // AssignTask assigns task to worker
 func (m *Master) AssignTask(taskRequest *TaskRequest, taskAssignment *TaskAssignment) error {
+	time.Now()
+	// only one goroutine should be able to access the master data structure at a time
+	m.mux.Lock()
+	defer m.mux.Unlock()
+
 	//see if there are any idle map tasks available
 	for taskID, taskInfo := range m.mapAssignments {
 		log.Printf("looking for idle MAP task %v\n", taskInfo)
-		if taskInfo.status == IDLE {
+		if taskInfo.status == IDLE || taskInfo.status == FAILED {
 			taskInfo.workerID = taskRequest.WorkerID
 			taskInfo.status = IN_PROGRESS
+			taskInfo.assignedAt = time.Now()
 			taskAssignment.TaskID = taskID
 			taskAssignment.Filenames = taskInfo.filenames
 			taskAssignment.Type = MAP
@@ -57,9 +70,10 @@ func (m *Master) AssignTask(taskRequest *TaskRequest, taskAssignment *TaskAssign
 	if m.MapDone() {
 		for taskID, taskInfo := range m.reduceAssignments {
 			log.Printf("looking for idle REDUCE task %v\n", taskInfo)
-			if taskInfo.status == IDLE {
+			if taskInfo.status == IDLE || taskInfo.status == FAILED {
 				taskInfo.workerID = taskRequest.WorkerID
 				taskInfo.status = IN_PROGRESS
+				taskInfo.assignedAt = time.Now()
 				taskAssignment.TaskID = taskID
 				taskAssignment.Filenames = taskInfo.filenames
 				taskAssignment.Type = REDUCE
@@ -76,20 +90,30 @@ func (m *Master) AssignTask(taskRequest *TaskRequest, taskAssignment *TaskAssign
 
 // TaskDone handles call from worker when worker is done with task
 func (m *Master) TaskDone(taskDoneNotification *TaskDoneNotification, taskDoneAck *TaskDoneAck) error {
+	// Since this function is only reading values, reading outdated values is probably fine as the next call will see the updated values
+	//  will avoid mutexes to reduce changes of deadlock
+
 	// if map tasks, mark it done and create a reduce task
 	if taskDoneNotification.Type == MAP {
 		log.Printf("Received MAP DONE notification from worker")
 		taskInfo := m.mapAssignments[taskDoneNotification.TaskID]
-		taskInfo.status = DONE
-		m.UpdateReduceTasks(taskDoneNotification.Filenames)
+
+		// Ignore if map task already done
+		if taskInfo.status != DONE {
+			taskInfo.status = DONE
+			m.UpdateReduceTasks(taskDoneNotification.Filenames)
+		} else {
+			log.Printf("Received MAP done notification for a task: %v already marked done, ignoring it\n", taskDoneNotification)
+		}
 		taskDoneAck.Ack = true
 	} else {
 		// for reduce tasks
 		taskInfo := m.reduceAssignments[taskDoneNotification.TaskID]
+
+		// No need to handle if reduce task already done
 		taskInfo.status = DONE
 		log.Printf("Marked REDUCE task %v done\n", m.reduceAssignments[taskDoneNotification.TaskID])
 		taskDoneAck.Ack = true
-
 	}
 	return nil
 }
@@ -105,7 +129,44 @@ func (m *Master) UpdateReduceTasks(mapIntermediateFiles []string) {
 			m.reduceAssignments[reduceTaskID] = createReduceTask(mapIntermediateFile)
 		}
 	}
+}
 
+//
+// monitorInProgressTasks monitors the tasks and marked them FAILED if not marked DONE within 10 secs
+//
+func (m *Master) monitorInProgressTasks() {
+	for {
+		if m.done {
+			break
+		}
+
+		m.mux.Lock()
+		currentTime := time.Now()
+		for _, taskInfo := range m.mapAssignments {
+			if taskInfo.status == IN_PROGRESS {
+				if currentTime.Sub(taskInfo.assignedAt).Seconds() > TIMEOUT.Seconds() {
+					// if not marked done within timeout sec, mark it IDLE so that it can be assigned to another worker
+					log.Printf("Found a map task %v which has been in progress for more that %f seconds, marking it IDLE\n", taskInfo, TIMEOUT.Seconds())
+					taskInfo.status = FAILED
+				}
+			}
+		}
+
+		for _, taskInfo := range m.reduceAssignments {
+			if taskInfo.status == IN_PROGRESS {
+				if currentTime.Sub(taskInfo.assignedAt).Seconds() > TIMEOUT.Seconds() {
+					// if not marked done within timeout sec, mark it IDLE so that it can be assigned to another worker
+					log.Printf("Found a reduce task %v which has been in progress for more that %f seconds, marking it IDLE\n", taskInfo, TIMEOUT.Seconds())
+					taskInfo.status = FAILED
+				}
+			}
+		}
+		m.mux.Unlock()
+		time.Sleep(time.Second * 10)
+	}
+
+	// decrement waitGroup
+	m.wg.Done()
 }
 
 //
@@ -129,7 +190,15 @@ func (m *Master) server() {
 // if the entire job has finished.
 //
 func (m *Master) Done() bool {
-	return m.MapDone() && m.ReduceDone()
+	allDone := m.MapDone() && m.ReduceDone()
+	if allDone {
+		// mark done true and wait for monitoring routine to be done
+		m.done = true
+		m.wg.Wait()
+		return true
+	} else {
+		return false
+	}
 }
 
 func (m *Master) MapDone() bool {
@@ -171,6 +240,13 @@ func MakeMaster(files []string, nReduce int) *Master {
 
 	m.reduceAssignments = make(map[int]*TaskInfo)
 	m.server()
+
+	// monitoring task will run till m.done is false
+	m.done = false
+
+	// start a monitoring thread
+	m.wg.Add(1)
+	go m.monitorInProgressTasks()
 	return &m
 }
 
