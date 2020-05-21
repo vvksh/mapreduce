@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
+	"io/ioutil"
 	"log"
 	"net/rpc"
 	"os"
@@ -74,15 +75,14 @@ func runMapper(mapf func(string, string) []KeyValue, task *TaskAssignment) {
 
 	encoders := make(map[int]*json.Encoder)
 
-	//create intermediate files
+	//create encoders
 	for i := 0; i < task.NReduce; i++ {
-		intermediateFileName := fmt.Sprintf("mr-%d-%d.txt", taskID, i)
-		intermediateFileNames = append(intermediateFileNames, intermediateFileName)
-		emptyFile, err := os.Create(intermediateFileName)
+		tmpFile, err := ioutil.TempFile("", "map")
 		if err != nil {
-			log.Printf("Couldn't create empty file %s\n", intermediateFileName)
+			log.Printf("Couldn't create temp file %s\n")
 		}
-		enc := json.NewEncoder(emptyFile)
+		intermediateFileNames = append(intermediateFileNames, tmpFile.Name())
+		enc := json.NewEncoder(tmpFile)
 		encoders[i] = enc
 	}
 
@@ -92,6 +92,13 @@ func runMapper(mapf func(string, string) []KeyValue, task *TaskAssignment) {
 		if err != nil {
 			log.Printf("Couldn't encode %v\n", &kv)
 		}
+	}
+
+	//Rename all tempFiles
+	for i := 0; i < task.NReduce; i++ {
+		mapOutputFileName := fmt.Sprintf("mr-%d-%d.txt", taskID, i)
+		os.Rename(intermediateFileNames[i], mapOutputFileName)
+		intermediateFileNames[i] = mapOutputFileName
 	}
 
 	//notify master
@@ -124,7 +131,8 @@ func runReducer(reducef func(string, []string) string, task *TaskAssignment) {
 
 	//create output file to append each output of reduce function
 	oname := fmt.Sprintf("mr-out-%d", task.TaskID)
-	ofile, _ := os.Create(oname)
+
+	tmpFile, _ := ioutil.TempFile("", "pre-")
 
 	//
 	// call Reduce on each distinct key in intermediate[],
@@ -144,11 +152,13 @@ func runReducer(reducef func(string, []string) string, task *TaskAssignment) {
 		output := reducef(intermediate[i].Key, values)
 
 		// this is the correct format for each line of Reduce output.
-		fmt.Fprintf(ofile, "%v %v\n", intermediate[i].Key, output)
+		fmt.Fprintf(tmpFile, "%v %v\n", intermediate[i].Key, output)
 
 		i = j
 	}
-	ofile.Close()
+	tmpFile.Close()
+
+	os.Rename(tmpFile.Name(), oname)
 
 	//notify master
 	TaskDone([]string{oname}, task.TaskID, REDUCE)
