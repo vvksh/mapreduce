@@ -7,12 +7,13 @@ import (
 	"hash/fnv"
 	"io/ioutil"
 	"log"
+	"math/rand"
 	"net/rpc"
 	"os"
 	"sort"
 	"time"
 
-	"github.com/google/uuid"
+	petname "github.com/dustinkirkland/golang-petname"
 )
 
 //
@@ -32,8 +33,9 @@ var workerID string
 //
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
-
-	workerID = uuid.New().String()
+	rand.Seed(time.Now().UnixNano())
+	workerID = petname.Generate(2, "-")
+	log.Printf("Initializing worker: %s", workerID)
 
 	for {
 		task, err := GetTask()
@@ -41,7 +43,7 @@ func Worker(mapf func(string, string) []KeyValue,
 			log.Println("Couldn't connect to master,quitting")
 			break
 		}
-		log.Printf("Got task %v\n", task)
+		// log.Printf("Got task %v\n", task)
 		if tasksAssigned(task) {
 			if task.Type == MAP {
 				runMapper(mapf, task)
@@ -61,11 +63,11 @@ func runMapper(mapf func(string, string) []KeyValue, task *TaskAssignment) {
 		return
 	}
 	filename := task.Filenames[0]
-	log.Printf("Handling mapping task %d filename: %s\n", taskID, filename)
+	// log.Printf("Handling mapping task %d filename: %s\n", taskID, filename)
 	content, err := readFile(filename)
 
 	if err != nil {
-		log.Printf("Couldn't read from %s\n", filename)
+		log.Fatalf("Couldn't read from %s\n", filename)
 	}
 
 	//call map function
@@ -79,7 +81,7 @@ func runMapper(mapf func(string, string) []KeyValue, task *TaskAssignment) {
 	for i := 0; i < task.NReduce; i++ {
 		tmpFile, err := ioutil.TempFile("", "map")
 		if err != nil {
-			log.Printf("Couldn't create temp file %s\n")
+			log.Fatal("Couldn't create temp file\n")
 		}
 		intermediateFileNames = append(intermediateFileNames, tmpFile.Name())
 		enc := json.NewEncoder(tmpFile)
@@ -90,7 +92,7 @@ func runMapper(mapf func(string, string) []KeyValue, task *TaskAssignment) {
 	for _, kv := range intermediatekeyValues {
 		err := encoders[ihash(kv.Key)%task.NReduce].Encode(&kv)
 		if err != nil {
-			log.Printf("Couldn't encode %v\n", &kv)
+			log.Fatalf("Couldn't encode %v\n", &kv)
 		}
 	}
 
@@ -113,7 +115,7 @@ func runReducer(reducef func(string, []string) string, task *TaskAssignment) {
 	for _, filename := range filenames {
 		fileToReduce, err := os.Open(filename)
 		if err != nil {
-			log.Printf("Couldn't open file %s to reduce\n", filename)
+			log.Fatalf("Couldn't open file %s to reduce\n", filename)
 		}
 
 		dec := json.NewDecoder(fileToReduce)

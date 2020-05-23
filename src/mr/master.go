@@ -52,7 +52,7 @@ func (m *Master) AssignTask(taskRequest *TaskRequest, taskAssignment *TaskAssign
 
 	//see if there are any idle map tasks available
 	for taskID, taskInfo := range m.mapAssignments {
-		log.Printf("looking for idle MAP task %v\n", taskInfo)
+		// log.Printf("looking for idle MAP task %v\n", taskInfo)
 		if taskInfo.status == IDLE || taskInfo.status == FAILED {
 			taskInfo.workerID = taskRequest.WorkerID
 			taskInfo.status = IN_PROGRESS
@@ -61,15 +61,15 @@ func (m *Master) AssignTask(taskRequest *TaskRequest, taskAssignment *TaskAssign
 			taskAssignment.Filenames = taskInfo.filenames
 			taskAssignment.Type = MAP
 			taskAssignment.NReduce = m.nReduce
-			log.Printf("task assignment: %v", taskAssignment)
+			log.Printf("MAP task assigned: taskId: %d to worker: %s ", taskAssignment.TaskID, taskInfo.workerID)
 			return nil
 		}
 	}
 
 	// if all map tasks done, look for any reduce tasks
-	if m.MapDone() {
+	if mapDone(m.mapAssignments) {
 		for taskID, taskInfo := range m.reduceAssignments {
-			log.Printf("looking for idle REDUCE task %v\n", taskInfo)
+			// log.Printf("looking for idle REDUCE task %v\n", taskInfo)
 			if taskInfo.status == IDLE || taskInfo.status == FAILED {
 				taskInfo.workerID = taskRequest.WorkerID
 				taskInfo.status = IN_PROGRESS
@@ -78,7 +78,7 @@ func (m *Master) AssignTask(taskRequest *TaskRequest, taskAssignment *TaskAssign
 				taskAssignment.Filenames = taskInfo.filenames
 				taskAssignment.Type = REDUCE
 				taskAssignment.NReduce = m.nReduce
-				log.Printf("task assignment: %v", taskAssignment)
+				log.Printf("REDUCE task assigned: taskId: %d to worker: %s ", taskAssignment.TaskID, taskInfo.workerID)
 				return nil
 			}
 		}
@@ -95,13 +95,13 @@ func (m *Master) TaskDone(taskDoneNotification *TaskDoneNotification, taskDoneAc
 
 	// if map tasks, mark it done and create a reduce task
 	if taskDoneNotification.Type == MAP {
-		log.Printf("Received MAP DONE notification from worker")
+		log.Printf("Received MAP DONE notification from worker %s for taskID: %d", taskDoneNotification.WorkerID, taskDoneNotification.TaskID)
 		taskInfo := m.mapAssignments[taskDoneNotification.TaskID]
 
 		// Ignore if map task already done
 		if taskInfo.status != DONE {
 			taskInfo.status = DONE
-			m.UpdateReduceTasks(taskDoneNotification.Filenames)
+			m.updateReduceTasks(taskDoneNotification.Filenames)
 		} else {
 			log.Printf("Received MAP done notification for a task: %v already marked done, ignoring it\n", taskDoneNotification)
 		}
@@ -112,14 +112,14 @@ func (m *Master) TaskDone(taskDoneNotification *TaskDoneNotification, taskDoneAc
 
 		// No need to handle if reduce task already done
 		taskInfo.status = DONE
-		log.Printf("Marked REDUCE task %v done\n", m.reduceAssignments[taskDoneNotification.TaskID])
+		log.Printf("Marked REDUCE done for taskId %d by workerId %s \n", taskDoneNotification.TaskID, taskDoneNotification.WorkerID)
 		taskDoneAck.Ack = true
 	}
 	return nil
 }
 
-// UpdateReduceTasks takes bunch of intermediate files and creates or updates reduce tasks
-func (m *Master) UpdateReduceTasks(mapIntermediateFiles []string) {
+// updateReduceTasks takes bunch of intermediate files and creates or updates reduce tasks
+func (m *Master) updateReduceTasks(mapIntermediateFiles []string) {
 	for _, mapIntermediateFile := range mapIntermediateFiles {
 		reduceTaskID := getReduceTaskID(mapIntermediateFile)
 		// if there is already a reduce task, append filename to that reduce task
@@ -142,21 +142,21 @@ func (m *Master) monitorInProgressTasks() {
 
 		m.mux.Lock()
 		currentTime := time.Now()
-		for _, taskInfo := range m.mapAssignments {
+		for taskID, taskInfo := range m.mapAssignments {
 			if taskInfo.status == IN_PROGRESS {
 				if currentTime.Sub(taskInfo.assignedAt).Seconds() > TIMEOUT.Seconds() {
 					// if not marked done within timeout sec, mark it IDLE so that it can be assigned to another worker
-					log.Printf("Found a map task %v which has been in progress for more that %f seconds, marking it IDLE\n", taskInfo, TIMEOUT.Seconds())
+					log.Printf("Found a stuck map task : {taskID: %d workerid: %s}, marking it FAILED\n", taskID, taskInfo.workerID)
 					taskInfo.status = FAILED
 				}
 			}
 		}
 
-		for _, taskInfo := range m.reduceAssignments {
+		for taskID, taskInfo := range m.reduceAssignments {
 			if taskInfo.status == IN_PROGRESS {
 				if currentTime.Sub(taskInfo.assignedAt).Seconds() > TIMEOUT.Seconds() {
 					// if not marked done within timeout sec, mark it IDLE so that it can be assigned to another worker
-					log.Printf("Found a reduce task %v which has been in progress for more that %f seconds, marking it IDLE\n", taskInfo, TIMEOUT.Seconds())
+					log.Printf("Found a stuck reduce task : {taskID: %d workerid: %s}, marking it FAILED\n", taskID, taskInfo.workerID)
 					taskInfo.status = FAILED
 				}
 			}
@@ -190,7 +190,7 @@ func (m *Master) server() {
 // if the entire job has finished.
 //
 func (m *Master) Done() bool {
-	allDone := m.MapDone() && m.ReduceDone()
+	allDone := mapDone(m.mapAssignments) && reduceDone(m.reduceAssignments)
 	if allDone {
 		// mark done true and wait for monitoring routine to be done
 		m.done = true
@@ -201,8 +201,8 @@ func (m *Master) Done() bool {
 	}
 }
 
-func (m *Master) MapDone() bool {
-	for _, mapAssignment := range m.mapAssignments {
+func mapDone(mapAssignments map[int]*TaskInfo) bool {
+	for _, mapAssignment := range mapAssignments {
 		if mapAssignment.status != DONE {
 			// log.Printf("REDUCE tasks not done \n %v\n", reduceAssignment)
 			return false
@@ -211,8 +211,8 @@ func (m *Master) MapDone() bool {
 	return true
 }
 
-func (m *Master) ReduceDone() bool {
-	for _, reduceAssignment := range m.reduceAssignments {
+func reduceDone(reduceAssignments map[int]*TaskInfo) bool {
+	for _, reduceAssignment := range reduceAssignments {
 		if reduceAssignment.status != DONE {
 			// log.Printf("REDUCE tasks not done \n %v\n", reduceAssignment)
 			return false
@@ -255,7 +255,6 @@ func createReduceTask(filename string) *TaskInfo {
 	taskInfo.status = IDLE
 	taskInfo.filenames = []string{filename}
 	return &taskInfo
-	// m.reduceAssignments[taskID] = &taskInfo
 }
 
 func getReduceTaskID(filename string) int {
@@ -264,8 +263,8 @@ func getReduceTaskID(filename string) int {
 	if len(matches) == 2 {
 		reduceTaskID, _ := strconv.Atoi(matches[1])
 		return reduceTaskID
-
 	}
+
 	log.Panicf("couldn't parse reduce task id from filename %v\n", filename)
 	return -1
 }
