@@ -48,6 +48,7 @@ cd src/main
 sh test-mr.sh
 ```
 
+
 ## TODO
 
 This project is not ready for distributed envronment. All the mappers produce the intermediate files in the same directory which reducers can access. 
