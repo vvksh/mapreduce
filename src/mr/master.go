@@ -45,7 +45,7 @@ var TIMEOUT = time.Second * 10
 
 // AssignTask assigns task to worker
 func (m *Master) AssignTask(taskRequest *TaskRequest, taskAssignment *TaskAssignment) error {
-	time.Now()
+
 	// only one goroutine should be able to access the master data structure at a time
 	m.mux.Lock()
 	defer m.mux.Unlock()
@@ -67,7 +67,7 @@ func (m *Master) AssignTask(taskRequest *TaskRequest, taskAssignment *TaskAssign
 	}
 
 	// if all map tasks done, look for any reduce tasks
-	if mapDone(m.mapAssignments) {
+	if m.mapDone() {
 		for taskID, taskInfo := range m.reduceAssignments {
 			// log.Printf("looking for idle REDUCE task %v\n", taskInfo)
 			if taskInfo.status == IDLE || taskInfo.status == FAILED {
@@ -90,15 +90,13 @@ func (m *Master) AssignTask(taskRequest *TaskRequest, taskAssignment *TaskAssign
 
 // TaskDone handles call from worker when worker is done with task
 func (m *Master) TaskDone(taskDoneNotification *TaskDoneNotification, taskDoneAck *TaskDoneAck) error {
-	// Since this function is only reading values, reading outdated values is probably fine as the next call will see the updated values
-	//  will avoid mutexes to reduce changes of deadlock
-
 	// if map tasks, mark it done and create a reduce task
 	if taskDoneNotification.Type == MAP {
 		log.Printf("Received MAP DONE notification from worker %s for taskID: %d", taskDoneNotification.WorkerID, taskDoneNotification.TaskID)
 		taskInfo := m.mapAssignments[taskDoneNotification.TaskID]
 
 		// Ignore if map task already done
+		m.mux.Lock()
 		if taskInfo.status != DONE {
 			taskInfo.status = DONE
 			m.updateReduceTasks(taskDoneNotification.Filenames)
@@ -106,19 +104,25 @@ func (m *Master) TaskDone(taskDoneNotification *TaskDoneNotification, taskDoneAc
 			log.Printf("Received MAP done notification for a task: %v already marked done, ignoring it\n", taskDoneNotification)
 		}
 		taskDoneAck.Ack = true
+		m.mux.Unlock()
 	} else {
 		// for reduce tasks
 		taskInfo := m.reduceAssignments[taskDoneNotification.TaskID]
 
 		// No need to handle if reduce task already done
+		m.mux.Lock()
 		taskInfo.status = DONE
+		m.mux.Unlock()
 		log.Printf("Marked REDUCE done for taskId %d by workerId %s \n", taskDoneNotification.TaskID, taskDoneNotification.WorkerID)
 		taskDoneAck.Ack = true
 	}
 	return nil
 }
 
-// updateReduceTasks takes bunch of intermediate files and creates or updates reduce tasks
+//
+// updateReduceTasks takes bunch of intermediate files and creates or updates reduce tasks,
+// the caller is expectd to get locks on master data structure
+//
 func (m *Master) updateReduceTasks(mapIntermediateFiles []string) {
 	for _, mapIntermediateFile := range mapIntermediateFiles {
 		reduceTaskID := getReduceTaskID(mapIntermediateFile)
@@ -133,14 +137,15 @@ func (m *Master) updateReduceTasks(mapIntermediateFiles []string) {
 
 //
 // monitorInProgressTasks monitors the tasks and marked them FAILED if not marked DONE within 10 secs
+// acquires lock on master data structure while it checks the task state and marks them FAILED if necessary
 //
 func (m *Master) monitorInProgressTasks() {
 	for {
+		m.mux.Lock()
 		if m.done {
 			break
 		}
 
-		m.mux.Lock()
 		currentTime := time.Now()
 		for taskID, taskInfo := range m.mapAssignments {
 			if taskInfo.status == IN_PROGRESS {
@@ -164,7 +169,7 @@ func (m *Master) monitorInProgressTasks() {
 		m.mux.Unlock()
 		time.Sleep(time.Second * 10)
 	}
-
+	m.mux.Unlock()
 	// decrement waitGroup
 	m.wg.Done()
 }
@@ -190,19 +195,23 @@ func (m *Master) server() {
 // if the entire job has finished.
 //
 func (m *Master) Done() bool {
-	allDone := mapDone(m.mapAssignments) && reduceDone(m.reduceAssignments)
+	m.mux.Lock()
+	allDone := m.mapDone() && m.reduceDone()
 	if allDone {
 		// mark done true and wait for monitoring routine to be done
 		m.done = true
+		m.mux.Unlock()
 		m.wg.Wait()
 		return true
 	} else {
+		m.mux.Unlock()
 		return false
 	}
 }
 
-func mapDone(mapAssignments map[int]*TaskInfo) bool {
-	for _, mapAssignment := range mapAssignments {
+// Returns if all map tasks done, the caller is expected to get locks on master data structure
+func (m *Master) mapDone() bool {
+	for _, mapAssignment := range m.mapAssignments {
 		if mapAssignment.status != DONE {
 			// log.Printf("REDUCE tasks not done \n %v\n", reduceAssignment)
 			return false
@@ -211,8 +220,9 @@ func mapDone(mapAssignments map[int]*TaskInfo) bool {
 	return true
 }
 
-func reduceDone(reduceAssignments map[int]*TaskInfo) bool {
-	for _, reduceAssignment := range reduceAssignments {
+// Returns if all reduce tasks done, the caller is expected to get locks on master data structure
+func (m *Master) reduceDone() bool {
+	for _, reduceAssignment := range m.reduceAssignments {
 		if reduceAssignment.status != DONE {
 			// log.Printf("REDUCE tasks not done \n %v\n", reduceAssignment)
 			return false
