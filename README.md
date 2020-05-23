@@ -48,4 +48,8 @@ cd src/main
 sh test-mr.sh
 ```
 
-This repo also contains github actions to test the repo. It just prepares a docker container based on golang:1.13.7 and runs `src/main/test-mr.sh`
+## TODO
+
+This project is not ready for distributed envronment. All the mappers produce the intermediate files in the same directory which reducers can access. 
+In distributed environment, the reducers will either have to connect to mapper via RPC to access the files or the mappers will have to store files in 
+a distributed file system (eg HDFS)
